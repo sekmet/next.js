@@ -2,7 +2,7 @@
 import { renderViaHTTP } from 'next-test-utils'
 import cheerio from 'cheerio'
 
-export default function (context) {
+export default function(context) {
   describe('Render via SSR', () => {
     it('should render the home page', async () => {
       const html = await renderViaHTTP(context.port, '/')
@@ -70,12 +70,10 @@ export default function (context) {
       expect(data).toBe('item')
     })
 
-    it('Should serve public files and prioritize pages', async () => {
+    it('Should serve public files', async () => {
       const html = await renderViaHTTP(context.port, '/about')
-      const html2 = await renderViaHTTP(context.port, '/query')
       const data = await renderViaHTTP(context.port, '/about/data.txt')
       expect(html).toMatch(/This is the About page foobar/)
-      expect(html2).toMatch(/{"a":"blue"}/)
       expect(data).toBe('data')
     })
 

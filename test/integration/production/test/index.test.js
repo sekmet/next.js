@@ -9,7 +9,7 @@ import {
   startApp,
   stopApp,
   renderViaHTTP,
-  waitFor
+  waitFor,
 } from 'next-test-utils'
 import fetch from 'node-fetch'
 import dynamicImportTests from './dynamic'
@@ -18,7 +18,7 @@ import security from './security'
 import {
   BUILD_MANIFEST,
   REACT_LOADABLE_MANIFEST,
-  PAGES_MANIFEST
+  PAGES_MANIFEST,
 } from 'next/constants'
 import cheerio from 'cheerio'
 const appDir = join(__dirname, '../')
@@ -37,7 +37,7 @@ describe('Production Usage', () => {
     app = nextServer({
       dir: join(__dirname, '../'),
       dev: false,
-      quiet: true
+      quiet: true,
     })
 
     server = await startApp(app)
@@ -87,14 +87,14 @@ describe('Production Usage', () => {
 
     it('should render 200 for POST on page', async () => {
       const res = await fetch(`http://localhost:${appPort}/about`, {
-        method: 'POST'
+        method: 'POST',
       })
       expect(res.status).toBe(200)
     })
 
     it('should render 404 for POST on missing page', async () => {
       const res = await fetch(`http://localhost:${appPort}/fake-page`, {
-        method: 'POST'
+        method: 'POST',
       })
       expect(res.status).toBe(404)
     })
@@ -124,7 +124,7 @@ describe('Production Usage', () => {
       const res = await fetch(
         `http://localhost:${appPort}/static/data/item.txt`,
         {
-          method: 'POST'
+          method: 'POST',
         }
       )
       expect(res.headers.get('allow').includes('GET')).toBe(true)
@@ -138,7 +138,7 @@ describe('Production Usage', () => {
         `http://localhost:${appPort}/_next/static/${buildId}/pages/index.js`,
         {
           method: 'GET',
-          headers: { 'if-unmodified-since': 'Fri, 12 Jul 2019 20:00:13 GMT' }
+          headers: { 'if-unmodified-since': 'Fri, 12 Jul 2019 20:00:13 GMT' },
         }
       )
       expect(res.status).toBe(412)
@@ -151,7 +151,7 @@ describe('Production Usage', () => {
         `http://localhost:${appPort}/_next/static/${buildId}/pages/index.js`,
         {
           method: 'GET',
-          headers: { 'if-unmodified-since': 'nextjs' }
+          headers: { 'if-unmodified-since': 'nextjs' },
         }
       )
       expect(res.status).toBe(200)
@@ -352,9 +352,9 @@ describe('Production Usage', () => {
     it('should handle already finished responses', async () => {
       const res = {
         finished: false,
-        end () {
+        end() {
           this.finished = true
-        }
+        },
       }
       const html = await app.renderToHTML(
         { method: 'GET' },
@@ -376,15 +376,11 @@ describe('Production Usage', () => {
 
     it('Should allow access to public files', async () => {
       const data = await renderViaHTTP(appPort, '/data/data.txt')
+      const file = await renderViaHTTP(appPort, '/file')
+      const legacy = await renderViaHTTP(appPort, '/static/legacy.txt')
       expect(data).toBe('data')
-    })
-
-    it('Should prioritize pages over public files', async () => {
-      const html = await renderViaHTTP(appPort, '/about')
-      const data = await renderViaHTTP(appPort, '/file')
-
-      expect(html).toMatch(/About Page/)
-      expect(data).toBe('test')
+      expect(file).toBe('test')
+      expect(legacy).toMatch(`new static folder`)
     })
 
     it('should reload the page on page script error', async () => {
@@ -425,6 +421,24 @@ describe('Production Usage', () => {
       const $ = cheerio.load(html)
       const script = $('#__NEXT_DATA__').html()
       expect(script).not.toMatch(/runtimeConfig/)
+    })
+
+    it('should add autoExport for auto pre-rendered pages', async () => {
+      for (const page of ['/', '/about']) {
+        const html = await renderViaHTTP(appPort, page)
+        const $ = cheerio.load(html)
+        const data = JSON.parse($('#__NEXT_DATA__').html())
+        expect(data.autoExport).toBe(true)
+      }
+    })
+
+    it('should not add autoExport for non pre-rendered pages', async () => {
+      for (const page of ['/query']) {
+        const html = await renderViaHTTP(appPort, page)
+        const $ = cheerio.load(html)
+        const data = JSON.parse($('#__NEXT_DATA__').html())
+        expect(!!data.autoExport).toBe(false)
+      }
     })
 
     if (browserName === 'chrome') {
@@ -616,7 +630,7 @@ describe('Production Usage', () => {
         'beforeRender',
         'afterHydrate',
         'afterRender',
-        'routeChange'
+        'routeChange',
       ]
 
       allPerfMarks.forEach(name =>
@@ -647,6 +661,27 @@ describe('Production Usage', () => {
         await browser.close()
       }
     }
+  })
+
+  it('should have async on all script tags', async () => {
+    const html = await renderViaHTTP(appPort, '/')
+    const $ = cheerio.load(html)
+    let missing = false
+
+    for (const script of $('script').toArray()) {
+      // application/json doesn't need defer
+      if (
+        script.attribs.type === 'application/json' ||
+        script.attribs.src.includes('polyfills')
+      ) {
+        continue
+      }
+
+      if (script.attribs.async !== '') {
+        missing = true
+      }
+    }
+    expect(missing).toBe(false)
   })
 
   dynamicImportTests(context, (p, q) => renderViaHTTP(context.appPort, p, q))

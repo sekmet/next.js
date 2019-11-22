@@ -4,8 +4,8 @@ import cheerio from 'cheerio'
 import { BUILD_MANIFEST, REACT_LOADABLE_MANIFEST } from 'next/constants'
 import { join } from 'path'
 
-export default function (render, fetch) {
-  async function get$ (path, query) {
+export default function(render, fetch) {
+  async function get$(path, query) {
     const html = await render(path, query)
     return cheerio.load(html)
   }
@@ -80,6 +80,16 @@ export default function (render, fetch) {
       expect(html).not.toContain(
         '<link rel="stylesheet" href="dedupe-style.css"/><link rel="stylesheet" href="dedupe-style.css"/>'
       )
+    })
+
+    test('header helper dedupes tags with the same key as the default', async () => {
+      const html = await render('/head-duplicate-default-keys')
+      expect(html).toContain('<meta charSet="iso-8859-5"/>')
+      expect(html).not.toContain('<meta charSet="utf-8"/>')
+      expect(html).toContain(
+        '<meta name="viewport" content="width=device-width,initial-scale=1"/>'
+      )
+      expect(html).not.toContain('<meta name="width=device-width"/>')
     })
 
     test('header helper avoids dedupe of specific tags', async () => {

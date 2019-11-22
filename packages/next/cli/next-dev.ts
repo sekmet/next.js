@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { resolve, join } from 'path'
+import { resolve } from 'path'
 import arg from 'next/dist/compiled/arg/index.js'
 import { existsSync } from 'fs'
 import startServer from '../server/lib/start-server'
@@ -52,24 +52,16 @@ const nextDev: cliCommand = argv => {
     printAndExit(`> No such directory exists as the project root: ${dir}`)
   }
 
-  if (!existsSync(join(dir, 'pages'))) {
-    if (existsSync(join(dir, '..', 'pages'))) {
-      printAndExit(
-        '> No `pages` directory found. Did you mean to run `next` in the parent (`../`) directory?'
-      )
-    }
-
-    printAndExit(
-      "> Couldn't find a `pages` directory. Please create one under the project root"
-    )
-  }
-
   const port = args['--port'] || 3000
   const appUrl = `http://${args['--hostname'] || 'localhost'}:${port}`
 
   startedDevelopmentServer(appUrl)
 
-  startServer({ dir, dev: true }, port, args['--hostname'])
+  startServer(
+    { dir, dev: true, isNextDevCommand: true },
+    port,
+    args['--hostname']
+  )
     .then(async app => {
       await app.prepare()
     })
@@ -85,9 +77,7 @@ const nextDev: cliCommand = argv => {
             scriptLine => scriptLine[1] === 'next'
           )
           if (nextScript) {
-            errorMessage += `\nUse \`npm run ${
-              nextScript[0]
-            } -- -p <some other port>\`.`
+            errorMessage += `\nUse \`npm run ${nextScript[0]} -- -p <some other port>\`.`
           }
         }
         // tslint:disable-next-line

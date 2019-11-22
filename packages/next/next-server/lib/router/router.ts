@@ -2,7 +2,7 @@
 // tslint:disable:no-console
 import { ParsedUrlQuery } from 'querystring'
 import { ComponentType } from 'react'
-import { parse, UrlObject, format } from 'url'
+import { parse, UrlObject } from 'url'
 
 import mitt, { MittEmitter } from '../mitt'
 import {
@@ -14,9 +14,9 @@ import {
   SUPPORTS_PERFORMANCE_USER_TIMING,
 } from '../utils'
 import { rewriteUrlForNextExport } from './rewrite-url-for-export'
+import { isDynamicRoute } from './utils/is-dynamic'
 import { getRouteMatcher } from './utils/route-matcher'
 import { getRouteRegex } from './utils/route-regex'
-import { isDynamicRoute } from './utils/is-dynamic'
 
 function toRoute(path: string): string {
   return path.replace(/\/$/, '') || '/'
@@ -71,6 +71,7 @@ export default class Router implements BaseRouter {
   _bps: BeforePopStateCallback | undefined
   events: MittEmitter
   _wrapApp: (App: ComponentType) => any
+  isSsr: boolean
 
   static events: MittEmitter = mitt()
 
@@ -118,10 +119,17 @@ export default class Router implements BaseRouter {
     this.pageLoader = pageLoader
     this.pathname = pathname
     this.query = query
-    this.asPath = as
+    // if auto prerendered and dynamic route wait to update asPath
+    // until after mount to prevent hydration mismatch
+    this.asPath =
+      // @ts-ignore this is temporarily global (attached to window)
+      isDynamicRoute(pathname) && __NEXT_DATA__.autoExport ? pathname : as
     this.sub = subscription
     this.clc = null
     this._wrapApp = wrapApp
+    // make sure to ignore extra popState in safari on navigating
+    // back from external site
+    this.isSsr = true
 
     if (typeof window !== 'undefined') {
       // in order for `e.state` to work on the `onpopstate` event
@@ -133,17 +141,6 @@ export default class Router implements BaseRouter {
       )
 
       window.addEventListener('popstate', this.onPopState)
-      window.addEventListener('unload', () => {
-        // Workaround for popstate firing on initial page load when
-        // navigating back from an external site
-        if (history.state) {
-          const { url, as, options }: any = history.state
-          this.changeState('replaceState', url, as, {
-            ...options,
-            fromExternal: true,
-          })
-        }
-      })
     }
   }
 
@@ -174,7 +171,12 @@ export default class Router implements BaseRouter {
 
     // Make sure we don't re-render on initial load,
     // can be caused by navigating back from an external site
-    if (e.state.options && e.state.options.fromExternal) {
+    if (
+      e.state &&
+      this.isSsr &&
+      e.state.url === this.pathname &&
+      e.state.as === this.asPath
+    ) {
       return
     }
 
@@ -249,6 +251,9 @@ export default class Router implements BaseRouter {
 
   change(method: string, _url: Url, _as: Url, options: any): Promise<boolean> {
     return new Promise((resolve, reject) => {
+      if (!options._h) {
+        this.isSsr = false
+      }
       // marking route changes as a navigation start entry
       if (SUPPORTS_PERFORMANCE_USER_TIMING) {
         performance.mark('routeChange')
@@ -314,9 +319,14 @@ export default class Router implements BaseRouter {
         const rr = getRouteRegex(route)
         const routeMatch = getRouteMatcher(rr)(asPathname)
         if (!routeMatch) {
-          console.error(
+          const error =
             'The provided `as` value is incompatible with the `href` value. This is invalid. https://err.sh/zeit/next.js/incompatible-href-as'
-          )
+
+          if (process.env.NODE_ENV !== 'production') {
+            throw new Error(error)
+          } else {
+            console.error(error)
+          }
           return resolve(false)
         }
 
@@ -375,7 +385,15 @@ export default class Router implements BaseRouter {
 
     if (method !== 'pushState' || getURL() !== as) {
       // @ts-ignore method should always exist on history
-      window.history[method]({ url, as, options }, null, as)
+      window.history[method](
+        {
+          url,
+          as,
+          options,
+        },
+        null,
+        as
+      )
     }
   }
 
@@ -613,22 +631,16 @@ export default class Router implements BaseRouter {
     const { Component: App } = this.components['/_app']
     let props
 
-    if (
-      // @ts-ignore workaround for dead-code elimination
-      (self.__HAS_SPR || process.env.NODE_ENV !== 'production') &&
-      (Component as any).__NEXT_SPR
-    ) {
+    if ((Component as any).__NEXT_SPR) {
       let status: any
-      const url = ctx.asPath
-        ? ctx.asPath
-        : format({
-            pathname: ctx.pathname,
-            query: ctx.query,
-          })
+      // pathname should have leading slash
+      let { pathname } = parse(ctx.asPath || ctx.pathname)
+      pathname = !pathname || pathname === '/' ? '/index' : pathname
 
-      props = await fetch(url, {
-        headers: { 'content-type': 'application/json' },
-      })
+      props = await fetch(
+        // @ts-ignore __NEXT_DATA__
+        `/_next/data/${__NEXT_DATA__.buildId}${pathname}.json`
+      )
         .then(res => {
           if (!res.ok) {
             status = res.status
@@ -636,11 +648,10 @@ export default class Router implements BaseRouter {
           }
           return res.json()
         })
-        .then((pageProps: any) => {
-          return { pageProps }
-        })
         .catch((err: Error) => {
-          return { error: err.message, status }
+          console.error(`Failed to load data`, status, err)
+          window.location.href = pathname!
+          return new Promise(() => {})
         })
     } else {
       const AppTree = this._wrapApp(App)

@@ -4,7 +4,7 @@
 
 ### Using `create-next-app`
 
-Execute [`create-next-app`](https://github.com/segmentio/create-next-app) with [Yarn](https://yarnpkg.com/lang/en/docs/cli/create/) or [npx](https://github.com/zkat/npx#readme) to bootstrap the example:
+Execute [`create-next-app`](https://github.com/zeit/next.js/tree/canary/packages/create-next-app) with [Yarn](https://yarnpkg.com/lang/en/docs/cli/create/) or [npx](https://github.com/zkat/npx#readme) to bootstrap the example:
 
 ```bash
 npx create-next-app --example with-apollo-and-redux-saga with-apollo-and-redux-saga-app
@@ -48,12 +48,7 @@ const mapStateToProps = state => ({
   location: state.form.location,
 })
 
-export default withReduxSaga(
-  connect(
-    mapStateToProps,
-    null
-  )(Index)
-)
+export default withReduxSaga(connect(mapStateToProps, null)(Index))
 ```
 
 `connect` must go inside `withReduxSaga` otherwise `connect` will not be able to find the store.

@@ -15,27 +15,29 @@ const mkdirp = promisify(mkdirpModule)
 const accessP = promisify(access)
 
 global.__NEXT_DATA__ = {
-  nextExport: true
+  nextExport: true,
 }
 
-export default async function ({
+export default async function({
   path,
   pathMap,
   distDir,
   buildId,
   outDir,
+  sprDataDir,
   renderOpts,
+  buildExport,
   serverRuntimeConfig,
   subFolders,
-  serverless
+  serverless,
 }) {
   let results = {
-    ampValidations: []
+    ampValidations: [],
   }
 
   try {
     let { query = {} } = pathMap
-    const { page, sprPage } = pathMap
+    const { page } = pathMap
     const filePath = path === '/' ? '/index' : path
     const ampPath = `${filePath}.amp`
 
@@ -45,7 +47,7 @@ export default async function ({
       if (params) {
         query = {
           ...query,
-          ...params
+          ...params,
         }
       } else {
         throw new Error(
@@ -60,26 +62,20 @@ export default async function ({
       setHeader: () => {},
       hasHeader: () => false,
       removeHeader: () => {},
-      getHeaderNames: () => []
+      getHeaderNames: () => [],
     }
 
     const req = {
       url: path,
-      ...headerMocks
+      ...headerMocks,
     }
     const res = {
-      ...headerMocks
-    }
-
-    if (sprPage && isDynamicRoute(page)) {
-      query._nextPreviewSkeleton = 1
-      // pass via `req` to avoid adding code to serverless bundle
-      req.url += (req.url.includes('?') ? '&' : '?') + '_nextPreviewSkeleton=1'
+      ...headerMocks,
     }
 
     envConfig.setConfig({
       serverRuntimeConfig,
-      publicRuntimeConfig: renderOpts.runtimeConfig
+      publicRuntimeConfig: renderOpts.runtimeConfig,
     })
 
     let htmlFilename = `${filePath}${sep}index.html`
@@ -97,19 +93,37 @@ export default async function ({
     }
 
     const baseDir = join(outDir, dirname(htmlFilename))
-    const htmlFilepath = join(outDir, htmlFilename)
+    let htmlFilepath = join(outDir, htmlFilename)
 
     await mkdirp(baseDir)
     let html
     let curRenderOpts = {}
     let renderMethod = renderToHTML
 
+    // eslint-disable-next-line camelcase
+    const renderedDuringBuild = unstable_getStaticProps => {
+      // eslint-disable-next-line camelcase
+      return !buildExport && unstable_getStaticProps && !isDynamicRoute(path)
+    }
+
     if (serverless) {
-      renderMethod = require(join(
+      const mod = require(join(
         distDir,
         'serverless/pages',
         (page === '/' ? 'index' : page) + '.js'
-      )).renderReqToHTML
+      ))
+
+      // for non-dynamic SPR pages we should have already
+      // prerendered the file
+      if (renderedDuringBuild(mod.unstable_getStaticProps)) return results
+
+      if (mod.unstable_getStaticProps && !htmlFilepath.endsWith('.html')) {
+        // make sure it ends with .html if the name contains a dot
+        htmlFilename += '.html'
+        htmlFilepath += '.html'
+      }
+
+      renderMethod = mod.renderReqToHTML
       const result = await renderMethod(req, res, true)
       curRenderOpts = result.renderOpts || {}
       html = result.html
@@ -124,6 +138,22 @@ export default async function ({
         page,
         serverless
       )
+
+      // for non-dynamic SPR pages we should have already
+      // prerendered the file
+      if (renderedDuringBuild(components.unstable_getStaticProps)) {
+        return results
+      }
+
+      // TODO: de-dupe the logic here between serverless and server mode
+      if (
+        components.unstable_getStaticProps &&
+        !htmlFilepath.endsWith('.html')
+      ) {
+        // make sure it ends with .html if the name contains a dot
+        htmlFilepath += '.html'
+        htmlFilename += '.html'
+      }
 
       if (typeof components.Component === 'string') {
         html = components.Component
@@ -144,8 +174,8 @@ export default async function ({
           page,
           result: {
             errors,
-            warnings
-          }
+            warnings,
+          },
         })
       }
     }
@@ -184,10 +214,22 @@ export default async function ({
         await writeFileP(ampHtmlFilepath, ampHtml, 'utf8')
       }
     }
+
+    if (curRenderOpts.sprData) {
+      const dataFile = join(
+        sprDataDir,
+        htmlFilename.replace(/\.html$/, '.json')
+      )
+
+      await mkdirp(dirname(dataFile))
+      await writeFileP(dataFile, JSON.stringify(curRenderOpts.sprData), 'utf8')
+    }
+    results.fromBuildExportRevalidate = curRenderOpts.revalidate
+
     await writeFileP(htmlFilepath, html, 'utf8')
     return results
   } catch (error) {
-    console.error(`\nError occurred prerendering ${path}:`, error)
+    console.error(`\nError occurred prerendering page "${path}":`, error)
     return { ...results, error: true }
   }
 }

@@ -41,7 +41,7 @@ type AmpStatus = {
   code: string
 }
 
-type AmpPageStatus = {
+export type AmpPageStatus = {
   [page: string]: { errors: AmpStatus[]; warnings: AmpStatus[] }
 }
 
@@ -173,7 +173,7 @@ buildStore.subscribe(state => {
       }
 
       if (Object.keys(amp).length > 0) {
-        warnings = (warnings || []).concat(formatAmpMessages(amp))
+        warnings = (warnings || []).concat(formatAmpMessages(amp) || [])
         if (!warnings.length) warnings = null
       }
     }
@@ -202,6 +202,7 @@ export function ampValidation(
       amp: Object.keys(amp)
         .filter(k => k !== page)
         .sort()
+        // eslint-disable-next-line no-sequences
         .reduce((a, c) => ((a[c] = amp[c]), a), {} as any),
     })
     return
@@ -211,6 +212,7 @@ export function ampValidation(
   buildStore.setState({
     amp: Object.keys(newAmp)
       .sort()
+      // eslint-disable-next-line no-sequences
       .reduce((a, c) => ((a[c] = newAmp[c]), a), {} as any),
   })
 }
@@ -265,13 +267,13 @@ export function watchCompilers(
             const errors = allMsgs
               .filter(msg => msg.severity === 'error')
               .map(d => ({
-                file: d.file,
+                file: (d.file || '').replace(/\\/g, '/'),
                 message: format(d),
               }))
             const warnings = allMsgs
               .filter(msg => msg.severity === 'warning')
               .map(d => ({
-                file: d.file,
+                file: (d.file || '').replace(/\\/g, '/'),
                 message: format(d),
               }))
 
@@ -310,7 +312,7 @@ export function watchCompilers(
           }
 
           const reportFiles = stats.compilation.modules
-            .map((m: any) => m.resource)
+            .map((m: any) => (m.resource || '').replace(/\\/g, '/'))
             .filter(Boolean)
 
           let filteredErrors = typeMessages.errors
