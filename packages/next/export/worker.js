@@ -1,5 +1,6 @@
 import mkdirpModule from 'mkdirp'
 import { promisify } from 'util'
+import url from 'url'
 import { extname, join, dirname, sep } from 'path'
 import { renderToHTML } from '../next-server/server/render'
 import { writeFile, access } from 'fs'
@@ -8,6 +9,7 @@ import { loadComponents } from '../next-server/server/load-components'
 import { isDynamicRoute } from '../next-server/lib/router/utils/is-dynamic'
 import { getRouteMatcher } from '../next-server/lib/router/utils/route-matcher'
 import { getRouteRegex } from '../next-server/lib/router/utils/route-regex'
+import { normalizePagePath } from '../next-server/server/normalize-page-path'
 
 const envConfig = require('../next-server/lib/runtime-config')
 const writeFileP = promisify(writeFile)
@@ -24,7 +26,7 @@ export default async function({
   distDir,
   buildId,
   outDir,
-  sprDataDir,
+  pagesDataDir,
   renderOpts,
   buildExport,
   serverRuntimeConfig,
@@ -36,18 +38,34 @@ export default async function({
   }
 
   try {
-    let { query = {} } = pathMap
+    const { query: originalQuery = {} } = pathMap
     const { page } = pathMap
-    const filePath = path === '/' ? '/index' : path
+    const filePath = normalizePagePath(path)
     const ampPath = `${filePath}.amp`
+    let query = { ...originalQuery }
+    let params
+
+    // We need to show a warning if they try to provide query values
+    // for an auto-exported page since they won't be available
+    const hasOrigQueryValues = Object.keys(originalQuery).length > 0
+    const queryWithAutoExportWarn = () => {
+      if (hasOrigQueryValues) {
+        throw new Error(
+          `\nError: you provided query values for ${path} which is an auto-exported page. These can not be applied since the page can no longer be re-rendered on the server. To disable auto-export for this page add \`getInitialProps\`\n`
+        )
+      }
+    }
 
     // Check if the page is a specified dynamic route
     if (isDynamicRoute(page) && page !== path) {
-      const params = getRouteMatcher(getRouteRegex(page))(path)
+      params = getRouteMatcher(getRouteRegex(page))(path)
       if (params) {
-        query = {
-          ...query,
-          ...params,
+        // we have to pass these separately for serverless
+        if (!serverless) {
+          query = {
+            ...query,
+            ...params,
+          }
         }
       } else {
         throw new Error(
@@ -107,26 +125,41 @@ export default async function({
     }
 
     if (serverless) {
-      const mod = require(join(
+      const curUrl = url.parse(req.url, true)
+      req.url = url.format({
+        ...curUrl,
+        query: {
+          ...curUrl.query,
+          ...query,
+        },
+      })
+      const { Component: mod } = await loadComponents(
         distDir,
-        'serverless/pages',
-        (page === '/' ? 'index' : page) + '.js'
-      ))
+        buildId,
+        page,
+        serverless
+      )
 
-      // for non-dynamic SPR pages we should have already
-      // prerendered the file
-      if (renderedDuringBuild(mod.unstable_getStaticProps)) return results
+      // if it was auto-exported the HTML is loaded here
+      if (typeof mod === 'string') {
+        html = mod
+        queryWithAutoExportWarn()
+      } else {
+        // for non-dynamic SSG pages we should have already
+        // prerendered the file
+        if (renderedDuringBuild(mod.unstable_getStaticProps)) return results
 
-      if (mod.unstable_getStaticProps && !htmlFilepath.endsWith('.html')) {
-        // make sure it ends with .html if the name contains a dot
-        htmlFilename += '.html'
-        htmlFilepath += '.html'
+        if (mod.unstable_getStaticProps && !htmlFilepath.endsWith('.html')) {
+          // make sure it ends with .html if the name contains a dot
+          htmlFilename += '.html'
+          htmlFilepath += '.html'
+        }
+
+        renderMethod = mod.renderReqToHTML
+        const result = await renderMethod(req, res, true, { ampPath }, params)
+        curRenderOpts = result.renderOpts || {}
+        html = result.html
       }
-
-      renderMethod = mod.renderReqToHTML
-      const result = await renderMethod(req, res, true)
-      curRenderOpts = result.renderOpts || {}
-      html = result.html
 
       if (!html) {
         throw new Error(`Failed to render serverless page`)
@@ -139,7 +172,7 @@ export default async function({
         serverless
       )
 
-      // for non-dynamic SPR pages we should have already
+      // for non-dynamic SSG pages we should have already
       // prerendered the file
       if (renderedDuringBuild(components.unstable_getStaticProps)) {
         return results
@@ -157,14 +190,15 @@ export default async function({
 
       if (typeof components.Component === 'string') {
         html = components.Component
+        queryWithAutoExportWarn()
       } else {
-        curRenderOpts = { ...components, ...renderOpts, ampPath }
+        curRenderOpts = { ...components, ...renderOpts, ampPath, params }
         html = await renderMethod(req, res, page, query, curRenderOpts)
       }
     }
 
-    const validateAmp = async (html, page) => {
-      const validator = await AmpHtmlValidator.getInstance()
+    const validateAmp = async (html, page, validatorPath) => {
+      const validator = await AmpHtmlValidator.getInstance(validatorPath)
       const result = validator.validateString(html)
       const errors = result.errors.filter(e => e.severity === 'ERROR')
       const warnings = result.errors.filter(e => e.severity !== 'ERROR')
@@ -181,7 +215,7 @@ export default async function({
     }
 
     if (curRenderOpts.inAmpMode) {
-      await validateAmp(html, path)
+      await validateAmp(html, path, curRenderOpts.ampValidatorPath)
     } else if (curRenderOpts.hybridAmp) {
       // we need to render the AMP version
       let ampHtmlFilename = `${ampPath}${sep}index.html`
@@ -215,21 +249,24 @@ export default async function({
       }
     }
 
-    if (curRenderOpts.sprData) {
+    if (curRenderOpts.pageData) {
       const dataFile = join(
-        sprDataDir,
+        pagesDataDir,
         htmlFilename.replace(/\.html$/, '.json')
       )
 
       await mkdirp(dirname(dataFile))
-      await writeFileP(dataFile, JSON.stringify(curRenderOpts.sprData), 'utf8')
+      await writeFileP(dataFile, JSON.stringify(curRenderOpts.pageData), 'utf8')
     }
     results.fromBuildExportRevalidate = curRenderOpts.revalidate
 
     await writeFileP(htmlFilepath, html, 'utf8')
     return results
   } catch (error) {
-    console.error(`\nError occurred prerendering page "${path}":`, error)
+    console.error(
+      `\nError occurred prerendering page "${path}" https://err.sh/zeit/next.js/prerender-error:`,
+      error
+    )
     return { ...results, error: true }
   }
 }

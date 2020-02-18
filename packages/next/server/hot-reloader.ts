@@ -1,11 +1,10 @@
-import fs from 'fs'
+import { NextHandleFunction } from 'connect'
 import { IncomingMessage, ServerResponse } from 'http'
 import { join, normalize, relative as relativePath, sep } from 'path'
-import { promisify } from 'util'
+import { UrlObject } from 'url'
 import webpack from 'webpack'
 import WebpackDevMiddleware from 'webpack-dev-middleware'
 import WebpackHotMiddleware from 'webpack-hot-middleware'
-
 import { createEntrypoints, createPagesMapping } from '../build/entries'
 import { watchCompilers } from '../build/output'
 import getBaseWebpackConfig from '../build/webpack-config'
@@ -18,15 +17,11 @@ import {
   IS_BUNDLED_PAGE_REGEX,
   ROUTE_NAME_REGEX,
 } from '../next-server/lib/constants'
+import { __ApiPreviewProps } from '../next-server/server/api-utils'
 import { route } from '../next-server/server/router'
 import errorOverlayMiddleware from './lib/error-overlay-middleware'
 import { findPageFile } from './lib/find-page-file'
 import onDemandEntryHandler, { normalizePage } from './on-demand-entry-handler'
-import { NextHandleFunction } from 'connect'
-import { UrlObject } from 'url'
-
-const access = promisify(fs.access)
-const readFile = promisify(fs.readFile)
 
 export async function renderScriptError(res: ServerResponse, error: Error) {
   // Asks CDNs and others to not to cache the errored page
@@ -134,6 +129,7 @@ export default class HotReloader {
   private serverPrevDocumentHash: string | null
   private prevChunkNames?: Set<any>
   private onDemandEntries: any
+  private previewProps: __ApiPreviewProps
 
   constructor(
     dir: string,
@@ -141,7 +137,13 @@ export default class HotReloader {
       config,
       pagesDir,
       buildId,
-    }: { config: object; pagesDir: string; buildId: string }
+      previewProps,
+    }: {
+      config: object
+      pagesDir: string
+      buildId: string
+      previewProps: __ApiPreviewProps
+    }
   ) {
     this.buildId = buildId
     this.dir = dir
@@ -154,6 +156,7 @@ export default class HotReloader {
     this.serverPrevDocumentHash = null
 
     this.config = config
+    this.previewProps = previewProps
   }
 
   async run(req: IncomingMessage, res: ServerResponse, parsedUrl: UrlObject) {
@@ -196,15 +199,14 @@ export default class HotReloader {
         const bundlePath = join(
           this.dir,
           this.config.distDir,
-          'static/development/pages',
+          'server/static/development/pages',
           page + '.js'
         )
 
-        // make sure to 404 for AMP bundles in case they weren't removed
+        // Make sure to 404 for AMP first pages
         try {
-          await access(bundlePath)
-          const data = await readFile(bundlePath, 'utf8')
-          if (data.includes('__NEXT_DROP_CLIENT_FILE__')) {
+          const mod = require(bundlePath)
+          if (mod?.config?.amp === true) {
             res.statusCode = 404
             res.end()
             return { finished: true }
@@ -253,6 +255,7 @@ export default class HotReloader {
       pages,
       'server',
       this.buildId,
+      this.previewProps,
       this.config
     )
 

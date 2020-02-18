@@ -1,45 +1,38 @@
 import { IncomingMessage, ServerResponse } from 'http'
 import { ParsedUrlQuery } from 'querystring'
 import React from 'react'
-import { renderToString, renderToStaticMarkup } from 'react-dom/server'
-import { NextRouter } from '../lib/router/router'
-import mitt, { MittEmitter } from '../lib/mitt'
+import { renderToStaticMarkup, renderToString } from 'react-dom/server'
 import {
-  loadGetInitialProps,
-  isResSent,
-  getDisplayName,
-  ComponentsEnhancer,
-  RenderPage,
-  DocumentInitialProps,
-  NextComponentType,
-  DocumentType,
-  AppType,
-  NextPageContext,
-} from '../lib/utils'
-import Head, { defaultHead } from '../lib/head'
-// @ts-ignore types will be added later as it's an internal module
-import Loadable from '../lib/loadable'
-import { DataManagerContext } from '../lib/data-manager-context'
-import { LoadableContext } from '../lib/loadable-context'
-import { RouterContext } from '../lib/router-context'
-import { DataManager } from '../lib/data-manager'
-import { getPageFiles, BuildManifest } from './get-page-files'
-import { AmpStateContext } from '../lib/amp-context'
-import optimizeAmp from './optimize-amp'
+  PAGES_404_GET_INITIAL_PROPS_ERROR,
+  SERVER_PROPS_GET_INIT_PROPS_CONFLICT,
+  SERVER_PROPS_SSG_CONFLICT,
+  SSG_GET_INITIAL_PROPS_CONFLICT,
+} from '../../lib/constants'
 import { isInAmpMode } from '../lib/amp'
-// Uses a module path because of the compiled output directory location
-import { PageConfig } from 'next/types'
+import { AmpStateContext } from '../lib/amp-context'
+import { AMP_RENDER_TARGET } from '../lib/constants'
+import Head, { defaultHead } from '../lib/head'
+import Loadable from '../lib/loadable'
+import { LoadableContext } from '../lib/loadable-context'
+import mitt, { MittEmitter } from '../lib/mitt'
+import { RouterContext } from '../lib/router-context'
+import { NextRouter } from '../lib/router/router'
 import { isDynamicRoute } from '../lib/router/utils/is-dynamic'
-import { SPR_GET_INITIAL_PROPS_CONFLICT } from '../../lib/constants'
-
-export type ManifestItem = {
-  id: number | string
-  name: string
-  file: string
-  publicPath: string
-}
-
-type ReactLoadableManifest = { [moduleId: string]: ManifestItem[] }
+import {
+  AppType,
+  ComponentsEnhancer,
+  DocumentInitialProps,
+  DocumentType,
+  getDisplayName,
+  isResSent,
+  loadGetInitialProps,
+  NextComponentType,
+  RenderPage,
+} from '../lib/utils'
+import { tryGetPreviewData, __ApiPreviewProps } from './api-utils'
+import { getPageFiles } from './get-page-files'
+import { LoadComponentsReturnType, ManifestItem } from './load-components'
+import optimizeAmp from './optimize-amp'
 
 function noRouter() {
   const message =
@@ -53,14 +46,22 @@ class ServerRouter implements NextRouter {
   query: ParsedUrlQuery
   asPath: string
   events: any
+  isFallback: boolean
   // TODO: Remove in the next major version, as this would mean the user is adding event listeners in server-side `render` method
   static events: MittEmitter = mitt()
 
-  constructor(pathname: string, query: ParsedUrlQuery, as: string) {
+  constructor(
+    pathname: string,
+    query: ParsedUrlQuery,
+    as: string,
+    { isFallback }: { isFallback: boolean }
+  ) {
     this.route = pathname.replace(/\/$/, '') || '/'
     this.pathname = pathname
     this.query = query
     this.asPath = as
+
+    this.isFallback = isFallback
   }
   push(): any {
     noRouter()
@@ -123,9 +124,7 @@ function render(
   return { html, head }
 }
 
-type RenderOpts = {
-  documentMiddlewareEnabled: boolean
-  ampBindInitData: boolean
+type RenderOpts = LoadComponentsReturnType & {
   staticMarkup: boolean
   buildId: string
   canonicalBase: string
@@ -139,31 +138,20 @@ type RenderOpts = {
   dev?: boolean
   ampMode?: any
   ampPath?: string
-  dataOnly?: boolean
   inAmpMode?: boolean
   hybridAmp?: boolean
-  buildManifest: BuildManifest
-  reactLoadableManifest: ReactLoadableManifest
-  pageConfig: PageConfig
-  Component: React.ComponentType
-  Document: DocumentType
-  DocumentMiddleware: (ctx: NextPageContext) => void
-  App: AppType
   ErrorDebug?: React.ComponentType<{ error: Error }>
   ampValidator?: (html: string, pathname: string) => Promise<void>
-  unstable_getStaticProps?: (params: {
-    params: any | undefined
-  }) => {
-    props: any
-    revalidate: number | false
-  }
-  unstable_getStaticParams?: () => void
+  documentMiddlewareEnabled?: boolean
+  isDataReq?: boolean
+  params?: ParsedUrlQuery
+  pages404?: boolean
+  previewProps: __ApiPreviewProps
 }
 
 function renderDocument(
   Document: DocumentType,
   {
-    dataManagerData,
     props,
     docProps,
     pathname,
@@ -174,6 +162,7 @@ function renderDocument(
     runtimeConfig,
     nextExport,
     autoExport,
+    isFallback,
     dynamicImportsIds,
     dangerousAsPath,
     hasCssMode,
@@ -192,7 +181,6 @@ function renderDocument(
     bodyTags,
     headTags,
   }: RenderOpts & {
-    dataManagerData: string
     props: any
     docProps: DocumentInitialProps
     pathname: string
@@ -210,6 +198,7 @@ function renderDocument(
     htmlProps: any
     bodyTags: any
     headTags: any
+    isFallback?: boolean
   }
 ): string {
   return (
@@ -218,7 +207,6 @@ function renderDocument(
       <AmpStateContext.Provider value={ampState}>
         {Document.renderDocument(Document, {
           __NEXT_DATA__: {
-            dataManager: dataManagerData,
             props, // The result of getInitialProps
             page: pathname, // The rendered page
             query, // querystring parsed / passed by the user
@@ -227,6 +215,7 @@ function renderDocument(
             runtimeConfig, // runtimeConfig if provided, otherwise don't sent in the resulting HTML
             nextExport, // If this is a page exported by `next export`
             autoExport, // If this is an auto exported page
+            isFallback,
             dynamicIds:
               dynamicImportsIds.length === 0 ? undefined : dynamicImportsIds,
             err: err ? serializeError(dev, err) : undefined, // Error if one happened, otherwise don't sent in the resulting HTML
@@ -254,6 +243,14 @@ function renderDocument(
   )
 }
 
+const invalidKeysMsg = (methodName: string, invalidKeys: string[]) => {
+  return (
+    `Additional keys were returned from \`${methodName}\`. Properties intended for your component must be nested under the \`props\` key, e.g.:` +
+    `\n\n\treturn { props: { title: 'My Title', content: '...' } }` +
+    `\n\nKeys that need to be moved: ${invalidKeys.join(', ')}.`
+  )
+}
+
 export async function renderToHTML(
   req: IncomingMessage,
   res: ServerResponse,
@@ -266,7 +263,6 @@ export async function renderToHTML(
     err,
     dev = false,
     documentMiddlewareEnabled = false,
-    ampBindInitData = false,
     staticMarkup = false,
     ampPath = '',
     App,
@@ -278,7 +274,12 @@ export async function renderToHTML(
     reactLoadableManifest,
     ErrorDebug,
     unstable_getStaticProps,
-    unstable_getStaticParams,
+    unstable_getStaticPaths,
+    unstable_getServerProps,
+    isDataReq,
+    params,
+    pages404,
+    previewProps,
   } = renderOpts
 
   const callMiddleware = async (method: string, args: any[], props = false) => {
@@ -307,6 +308,10 @@ export async function renderToHTML(
   const bodyTags = (...args: any) => callMiddleware('bodyTags', args)
   const htmlProps = (...args: any) => callMiddleware('htmlProps', args, true)
 
+  const didRewrite = (req as any)._nextDidRewrite
+  const isFallback = !!query.__nextFallback
+  delete query.__nextFallback
+
   const isSpr = !!unstable_getStaticProps
   const defaultAppGetInitialProps =
     App.getInitialProps === (App as any).origGetInitialProps
@@ -314,15 +319,46 @@ export async function renderToHTML(
   const hasPageGetInitialProps = !!(Component as any).getInitialProps
 
   const isAutoExport =
-    !hasPageGetInitialProps && defaultAppGetInitialProps && !isSpr
+    !hasPageGetInitialProps &&
+    defaultAppGetInitialProps &&
+    !isSpr &&
+    !unstable_getServerProps
 
-  if (hasPageGetInitialProps && isSpr) {
-    throw new Error(SPR_GET_INITIAL_PROPS_CONFLICT + ` ${pathname}`)
+  if (
+    process.env.NODE_ENV !== 'production' &&
+    (isAutoExport || isFallback) &&
+    isDynamicRoute(pathname) &&
+    didRewrite
+  ) {
+    // TODO: add err.sh when rewrites go stable
+    // Behavior might change before then (prefer SSR in this case).
+    // If we decide to ship rewrites to the client we could solve this
+    // by running over the rewrites and getting the params.
+    throw new Error(
+      `Rewrites don't support${
+        isFallback ? ' ' : ' auto-exported '
+      }dynamic pages${isFallback ? ' with getStaticProps ' : ' '}yet. ` +
+        `Using this will cause the page to fail to parse the params on the client${
+          isFallback ? ' for the fallback page ' : ''
+        }`
+    )
   }
 
-  if (!!unstable_getStaticParams && !isSpr) {
+  if (hasPageGetInitialProps && isSpr) {
+    throw new Error(SSG_GET_INITIAL_PROPS_CONFLICT + ` ${pathname}`)
+  }
+
+  if (hasPageGetInitialProps && unstable_getServerProps) {
+    throw new Error(SERVER_PROPS_GET_INIT_PROPS_CONFLICT + ` ${pathname}`)
+  }
+
+  if (unstable_getServerProps && isSpr) {
+    throw new Error(SERVER_PROPS_SSG_CONFLICT + ` ${pathname}`)
+  }
+
+  if (!!unstable_getStaticPaths && !isSpr) {
     throw new Error(
-      `unstable_getStaticParams was added without a unstable_getStaticProps in ${pathname}. Without unstable_getStaticProps, unstable_getStaticParams does nothing`
+      `unstable_getStaticPaths was added without a unstable_getStaticProps in ${pathname}. Without unstable_getStaticProps, unstable_getStaticPaths does nothing`
     )
   }
 
@@ -354,15 +390,21 @@ export async function renderToHTML(
       req.url = pathname
       renderOpts.nextExport = true
     }
+
+    if (pages404 && pathname === '/404' && !isAutoExport) {
+      throw new Error(PAGES_404_GET_INITIAL_PROPS_ERROR)
+    }
   }
   if (isAutoExport) renderOpts.autoExport = true
   if (isSpr) renderOpts.nextExport = false
 
   await Loadable.preloadAll() // Make sure all dynamic imports are loaded
 
-  // @ts-ignore url will always be set
-  const asPath: string = req.url
-  const router = new ServerRouter(pathname, query, asPath)
+  // url will always be set
+  const asPath = req.url as string
+  const router = new ServerRouter(pathname, query, asPath, {
+    isFallback: isFallback,
+  })
   const ctx = {
     err,
     req: isAutoExport ? undefined : req,
@@ -384,11 +426,6 @@ export async function renderToHTML(
     await DocumentMiddleware(ctx)
   }
 
-  let dataManager: DataManager | undefined
-  if (ampBindInitData) {
-    dataManager = new DataManager()
-  }
-
   const ampState = {
     ampFirst: pageConfig.amp === true,
     hasQuery: Boolean(query.amp),
@@ -399,15 +436,13 @@ export async function renderToHTML(
 
   const AppContainer = ({ children }: any) => (
     <RouterContext.Provider value={router}>
-      <DataManagerContext.Provider value={dataManager}>
-        <AmpStateContext.Provider value={ampState}>
-          <LoadableContext.Provider
-            value={moduleName => reactLoadableModules.push(moduleName)}
-          >
-            {children}
-          </LoadableContext.Provider>
-        </AmpStateContext.Provider>
-      </DataManagerContext.Provider>
+      <AmpStateContext.Provider value={ampState}>
+        <LoadableContext.Provider
+          value={moduleName => reactLoadableModules.push(moduleName)}
+        >
+          {children}
+        </LoadableContext.Provider>
+      </AmpStateContext.Provider>
     </RouterContext.Provider>
   )
 
@@ -419,9 +454,20 @@ export async function renderToHTML(
       ctx,
     })
 
-    if (isSpr) {
+    if (isSpr && !isFallback) {
+      // Reads of this are cached on the `req` object, so this should resolve
+      // instantly. There's no need to pass this data down from a previous
+      // invoke, where we'd have to consider server & serverless.
+      const previewData = tryGetPreviewData(req, res, previewProps)
       const data = await unstable_getStaticProps!({
-        params: isDynamicRoute(pathname) ? query : undefined,
+        ...(isDynamicRoute(pathname)
+          ? {
+              params: query as ParsedUrlQuery,
+            }
+          : { params: undefined }),
+        ...(previewData !== false
+          ? { preview: true, previewData: previewData }
+          : undefined),
       })
 
       const invalidKeys = Object.keys(data).filter(
@@ -429,12 +475,7 @@ export async function renderToHTML(
       )
 
       if (invalidKeys.length) {
-        throw new Error(
-          `Additional keys were returned from \`getStaticProps\`. Properties intended for your component must be nested under the \`props\` key, e.g.:` +
-            `\n\n\treturn { props: { title: 'My Title', content: '...' }` +
-            `\n\nKeys that need moved: ${invalidKeys.join(', ')}.
-        `
-        )
+        throw new Error(invalidKeysMsg('getStaticProps', invalidKeys))
       }
 
       if (typeof data.revalidate === 'number') {
@@ -458,25 +499,52 @@ export async function renderToHTML(
               `\nTo only run getStaticProps at build-time and not revalidate at runtime, you can set \`revalidate\` to \`false\`!`
           )
         }
-      } else if (data.revalidate === false) {
-        // `false` is an allowed behavior. We'll catch `revalidate: true` and
-        // fall into our default behavior.
-      } else {
-        // By default, we revalidate after 1 second. This value is optimal for
+      } else if (data.revalidate === true) {
+        // When enabled, revalidate after 1 second. This value is optimal for
         // the most up-to-date page possible, but without a 1-to-1
         // request-refresh ratio.
         data.revalidate = 1
+      } else {
+        // By default, we never revalidate.
+        data.revalidate = false
       }
 
       props.pageProps = data.props
       // pass up revalidate and props for export
       ;(renderOpts as any).revalidate = data.revalidate
-      ;(renderOpts as any).sprData = props
+      ;(renderOpts as any).pageData = props
     }
   } catch (err) {
     if (!dev || !err) throw err
     ctx.err = err
     renderOpts.err = err
+  }
+
+  if (unstable_getServerProps && !isFallback) {
+    const data = await unstable_getServerProps({
+      params,
+      query,
+      req,
+      res,
+    })
+
+    const invalidKeys = Object.keys(data).filter(key => key !== 'props')
+
+    if (invalidKeys.length) {
+      throw new Error(invalidKeysMsg('getServerProps', invalidKeys))
+    }
+
+    props.pageProps = data.props
+    ;(renderOpts as any).pageData = props
+  }
+  // We only need to do this if we want to support calling
+  // _app's getInitialProps for getServerProps if not this can be removed
+  if (isDataReq) return props
+
+  // We don't call getStaticProps or getServerProps while generating
+  // the fallback so make sure to set pageProps to an empty object
+  if (isFallback) {
+    props.pageProps = {}
   }
 
   // the response might be finished on the getInitialProps call
@@ -485,8 +553,8 @@ export async function renderToHTML(
   const devFiles = buildManifest.devFiles
   const files = [
     ...new Set([
-      ...getPageFiles(buildManifest, pathname),
       ...getPageFiles(buildManifest, '/_app'),
+      ...getPageFiles(buildManifest, pathname),
     ]),
   ]
   const polyfillFiles = getPageFiles(buildManifest, '/_polyfills')
@@ -511,86 +579,32 @@ export async function renderToHTML(
     }
   }
 
-  let renderPage: RenderPage
+  let renderPage: RenderPage = (
+    options: ComponentsEnhancer = {}
+  ): { html: string; head: any } => {
+    const renderError = renderPageError()
+    if (renderError) return renderError
 
-  if (ampBindInitData) {
-    const ssrPrepass = require('react-ssr-prepass')
+    const {
+      App: EnhancedApp,
+      Component: EnhancedComponent,
+    } = enhanceComponents(options, App, Component)
 
-    renderPage = async (
-      options: ComponentsEnhancer = {}
-    ): Promise<{ html: string; head: any; dataOnly?: true }> => {
-      const renderError = renderPageError()
-      if (renderError) return renderError
-
-      const {
-        App: EnhancedApp,
-        Component: EnhancedComponent,
-      } = enhanceComponents(options, App, Component)
-
-      const Application = () => (
-        <AppContainer>
-          <EnhancedApp
-            Component={EnhancedComponent}
-            router={router}
-            {...props}
-          />
-        </AppContainer>
-      )
-
-      const element = <Application />
-
-      try {
-        return render(renderElementToString, element, ampState)
-      } catch (err) {
-        if (err && typeof err === 'object' && typeof err.then === 'function') {
-          await ssrPrepass(element)
-          if (renderOpts.dataOnly) {
-            return {
-              html: '',
-              head: [],
-              dataOnly: true,
-            }
-          } else {
-            return render(renderElementToString, element, ampState)
-          }
-        }
-        throw err
-      }
-    }
-  } else {
-    renderPage = (
-      options: ComponentsEnhancer = {}
-    ): { html: string; head: any } => {
-      const renderError = renderPageError()
-      if (renderError) return renderError
-
-      const {
-        App: EnhancedApp,
-        Component: EnhancedComponent,
-      } = enhanceComponents(options, App, Component)
-
-      return render(
-        renderElementToString,
-        <AppContainer>
-          <EnhancedApp
-            Component={EnhancedComponent}
-            router={router}
-            {...props}
-          />
-        </AppContainer>,
-        ampState
-      )
-    }
+    return render(
+      renderElementToString,
+      <AppContainer>
+        <EnhancedApp Component={EnhancedComponent} router={router} {...props} />
+      </AppContainer>,
+      ampState
+    )
   }
   const documentCtx = { ...ctx, renderPage }
-  const docProps = await loadGetInitialProps(Document, documentCtx)
+  const docProps: DocumentInitialProps = await loadGetInitialProps(
+    Document,
+    documentCtx
+  )
   // the response might be finished on the getInitialProps call
   if (isResSent(res) && !isSpr) return null
-
-  let dataManagerData = '[]'
-  if (dataManager) {
-    dataManagerData = JSON.stringify([...dataManager.getData()])
-  }
 
   if (!docProps || typeof docProps.html !== 'string') {
     const message = `"${getDisplayName(
@@ -599,15 +613,11 @@ export async function renderToHTML(
     throw new Error(message)
   }
 
-  if (docProps.dataOnly) {
-    return dataManagerData
-  }
-
   const dynamicImportIdsSet = new Set<string>()
   const dynamicImports: ManifestItem[] = []
 
   for (const mod of reactLoadableModules) {
-    const manifestItem = reactLoadableManifest[mod]
+    const manifestItem: ManifestItem[] = reactLoadableManifest[mod]
 
     if (manifestItem) {
       manifestItem.forEach(item => {
@@ -628,12 +638,12 @@ export async function renderToHTML(
   let html = renderDocument(Document, {
     ...renderOpts,
     dangerousAsPath: router.asPath,
-    dataManagerData,
     ampState,
     props,
     headTags: await headTags(documentCtx),
     bodyTags: await bodyTags(documentCtx),
     htmlProps: await htmlProps(documentCtx),
+    isFallback,
     docProps,
     pathname,
     ampPath,
@@ -648,11 +658,13 @@ export async function renderToHTML(
   })
 
   if (inAmpMode && html) {
-    // use replace to allow rendering directly to body in AMP mode
-    html = html.replace(
-      '__NEXT_AMP_RENDER_TARGET__',
-      `<!-- __NEXT_DATA__ -->${docProps.html}`
-    )
+    // inject HTML to AMP_RENDER_TARGET to allow rendering
+    // directly to body in AMP mode
+    const ampRenderIndex = html.indexOf(AMP_RENDER_TARGET)
+    html =
+      html.substring(0, ampRenderIndex) +
+      `<!-- __NEXT_DATA__ -->${docProps.html}` +
+      html.substring(ampRenderIndex + AMP_RENDER_TARGET.length)
     html = await optimizeAmp(html)
 
     if (renderOpts.ampValidator) {

@@ -1,10 +1,10 @@
-import hash from 'string-hash'
-import { join, basename } from 'path'
 import babelLoader from 'babel-loader'
+import { basename, join } from 'path'
+import hash from 'string-hash'
 
-// increment 'd' to invalidate cache
+// increment 'j' to invalidate cache
 // eslint-disable-next-line no-useless-concat
-const cacheKey = 'babel-cache-' + 'd' + '-'
+const cacheKey = 'babel-cache-' + 'j' + '-'
 const nextBabelPreset = require('../../babel/preset')
 
 const getModernOptions = (babelOptions = {}) => {
@@ -58,6 +58,8 @@ module.exports = babelLoader.custom(babel => {
         pagesDir: opts.pagesDir,
         hasModern: opts.hasModern,
         babelPresetPlugins: opts.babelPresetPlugins,
+        development: opts.development,
+        polyfillsOptimization: opts.polyfillsOptimization,
       }
       const filename = join(opts.cwd, 'noop.js')
       const loader = Object.assign(
@@ -70,6 +72,8 @@ module.exports = babelLoader.custom(babel => {
                 (opts.isServer ? '-server' : '') +
                 (opts.isModern ? '-modern' : '') +
                 (opts.hasModern ? '-has-modern' : '') +
+                (opts.polyfillsOptimization ? '-new-polyfills' : '') +
+                (opts.development ? '-development' : '-production') +
                 JSON.stringify(
                   babel.loadPartialConfig({
                     filename,
@@ -91,6 +95,8 @@ module.exports = babelLoader.custom(babel => {
       delete loader.hasModern
       delete loader.pagesDir
       delete loader.babelPresetPlugins
+      delete loader.polyfillsOptimization
+      delete loader.development
       return { loader, custom }
     },
     config(
@@ -103,6 +109,8 @@ module.exports = babelLoader.custom(babel => {
           hasModern,
           pagesDir,
           babelPresetPlugins,
+          development,
+          polyfillsOptimization,
         },
       }
     ) {
@@ -126,6 +134,8 @@ module.exports = babelLoader.custom(babel => {
 
       options.caller.isServer = isServer
       options.caller.isModern = isModern
+      options.caller.polyfillsOptimization = polyfillsOptimization
+      options.caller.isDev = development
 
       options.plugins = options.plugins || []
 
@@ -175,9 +185,22 @@ module.exports = babelLoader.custom(babel => {
 
       options.plugins.push([
         require.resolve('babel-plugin-transform-define'),
-        { 'typeof window': isServer ? 'undefined' : 'object' },
+        {
+          'process.env.NODE_ENV': development ? 'development' : 'production',
+          'typeof window': isServer ? 'undefined' : 'object',
+          'process.browser': isServer ? false : true,
+        },
         'next-js-transform-define-instance',
       ])
+
+      if (isPageFile) {
+        if (!isServer) {
+          options.plugins.push([
+            require.resolve('../../babel/plugins/next-ssg-transform'),
+            {},
+          ])
+        }
+      }
 
       // As next-server/lib has stateful modules we have to transpile commonjs
       options.overrides = [

@@ -2,18 +2,23 @@ import { IncomingMessage, ServerResponse } from 'http'
 import { ParsedUrlQuery } from 'querystring'
 import { ComponentType } from 'react'
 import { format, URLFormatOptions, UrlObject } from 'url'
-
-import { ManifestItem } from '../server/render'
+import { ManifestItem } from '../server/load-components'
 import { NextRouter } from './router/router'
 
 /**
  * Types used by both next and next-server
  */
+
 export type NextComponentType<
   C extends BaseContext = NextPageContext,
   IP = {},
   P = {}
 > = ComponentType<P> & {
+  /**
+   * Used for initial page load data population. Data returned from `getInitialProps` is serialized when server rendered.
+   * Make sure to return plain `Object` without using `Date`, `Map`, `Set`.
+   * @param ctx Context of `page`
+   */
   getInitialProps?(context: C): IP | Promise<IP>
 }
 
@@ -50,7 +55,6 @@ export type ComponentsEnhancer =
 export type RenderPageResult = {
   html: string
   head?: Array<JSX.Element | null>
-  dataOnly?: true
 }
 
 export type RenderPage = (
@@ -63,7 +67,6 @@ export type BaseContext = {
 }
 
 export type NEXT_DATA = {
-  dataManager: string
   props: any
   page: string
   query: ParsedUrlQuery
@@ -72,6 +75,7 @@ export type NEXT_DATA = {
   runtimeConfig?: { [key: string]: any }
   nextExport?: boolean
   autoExport?: boolean
+  isFallback?: boolean
   dynamicIds?: string[]
   err?: Error & { statusCode?: number }
 }
@@ -196,6 +200,23 @@ export type NextApiResponse<T = any> = ServerResponse & {
    */
   json: Send<T>
   status: (statusCode: number) => NextApiResponse<T>
+
+  /**
+   * Set preview data for Next.js' prerender mode
+   */
+  setPreviewData: (
+    data: object | string,
+    options?: {
+      /**
+       * Specifies the number (in seconds) for the preview session to last for.
+       * The given number will be converted to an integer by rounding down.
+       * By default, no maximum age is set and the preview session finishes
+       * when the client shuts down (browser is closed).
+       */
+      maxAge?: number
+    }
+  ) => NextApiResponse<T>
+  clearPreviewData: () => NextApiResponse<T>
 }
 
 /**
@@ -241,7 +262,7 @@ export async function loadGetInitialProps<
   P = {}
 >(App: NextComponentType<C, IP, P>, ctx: C): Promise<IP> {
   if (process.env.NODE_ENV !== 'production') {
-    if (App.prototype && App.prototype.getInitialProps) {
+    if (App.prototype?.getInitialProps) {
       const message = `"${getDisplayName(
         App
       )}.getInitialProps()" is defined as an instance method - visit https://err.sh/zeit/next.js/get-initial-props-as-an-instance-method for more information.`
@@ -321,8 +342,8 @@ export function formatWithValidation(
   return format(url as any, options)
 }
 
-export const SUPPORTS_PERFORMANCE = typeof performance !== 'undefined'
-export const SUPPORTS_PERFORMANCE_USER_TIMING =
-  SUPPORTS_PERFORMANCE &&
+export const SP = typeof performance !== 'undefined'
+export const ST =
+  SP &&
   typeof performance.mark === 'function' &&
   typeof performance.measure === 'function'
