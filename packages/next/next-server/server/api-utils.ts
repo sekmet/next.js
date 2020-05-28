@@ -1,8 +1,8 @@
-import { parse } from 'content-type'
-import { CookieSerializeOptions } from 'cookie'
+import { parse } from 'next/dist/compiled/content-type'
+import { CookieSerializeOptions } from 'next/dist/compiled/cookie'
 import { IncomingMessage, ServerResponse } from 'http'
 import { PageConfig } from 'next/types'
-import getRawBody from 'raw-body'
+import getRawBody from 'next/dist/compiled/raw-body'
 import { Stream } from 'stream'
 import { isResSent, NextApiRequest, NextApiResponse } from '../lib/utils'
 import { decryptWithSecret, encryptWithSecret } from './crypto-utils'
@@ -30,20 +30,15 @@ export async function apiResolver(
   const apiRes = res as NextApiResponse
 
   try {
-    let config: PageConfig = {}
-    let bodyParser = true
     if (!resolverModule) {
       res.statusCode = 404
       res.end('Not Found')
       return
     }
+    const config: PageConfig = resolverModule.config || {}
+    const bodyParser = config.api?.bodyParser !== false
+    const externalResolver = config.api?.externalResolver || false
 
-    if (resolverModule.config) {
-      config = resolverModule.config
-      if (config.api && config.api.bodyParser === false) {
-        bodyParser = false
-      }
-    }
     // Parsing of cookies
     setLazyProp({ req: apiReq }, 'cookies', getCookieParser(req))
     // Parsing query string
@@ -58,9 +53,9 @@ export async function apiResolver(
       )
     }
 
-    apiRes.status = statusCode => sendStatusCode(apiRes, statusCode)
-    apiRes.send = data => sendData(apiRes, data)
-    apiRes.json = data => sendJson(apiRes, data)
+    apiRes.status = (statusCode) => sendStatusCode(apiRes, statusCode)
+    apiRes.send = (data) => sendData(apiRes, data)
+    apiRes.json = (data) => sendJson(apiRes, data)
     apiRes.setPreviewData = (data, options = {}) =>
       setPreviewData(apiRes, data, Object.assign({}, apiContext, options))
     apiRes.clearPreviewData = () => clearPreviewData(apiRes)
@@ -76,7 +71,12 @@ export async function apiResolver(
     // Call API route method
     await resolver(req, res)
 
-    if (process.env.NODE_ENV !== 'production' && !isResSent(res) && !wasPiped) {
+    if (
+      process.env.NODE_ENV !== 'production' &&
+      !externalResolver &&
+      !isResSent(res) &&
+      !wasPiped
+    ) {
       console.warn(
         `API resolved without sending a response for ${req.url}, this may result in stalled requests.`
       )
@@ -96,7 +96,10 @@ export async function apiResolver(
  * Parse incoming message like `json` or `urlencoded`
  * @param req request object
  */
-export async function parseBody(req: NextApiRequest, limit: string | number) {
+export async function parseBody(
+  req: NextApiRequest,
+  limit: string | number
+): Promise<any> {
   const contentType = parse(req.headers['content-type'] || 'text/plain')
   const { type, parameters } = contentType
   const encoding = parameters.charset || 'utf-8'
@@ -129,7 +132,7 @@ export async function parseBody(req: NextApiRequest, limit: string | number) {
  * Parse `JSON` and handles invalid `JSON` strings
  * @param str `JSON` string
  */
-function parseJson(str: string) {
+function parseJson(str: string): object {
   if (str.length === 0) {
     // special-case empty json body, as it's a common client-side mistake
     return {}
@@ -182,7 +185,7 @@ export function getCookieParser(req: IncomingMessage) {
       return {}
     }
 
-    const { parse } = require('cookie')
+    const { parse } = require('next/dist/compiled/cookie')
     return parse(Array.isArray(header) ? header.join(';') : header)
   }
 }
@@ -192,7 +195,10 @@ export function getCookieParser(req: IncomingMessage) {
  * @param res response object
  * @param statusCode `HTTP` status code of response
  */
-export function sendStatusCode(res: NextApiResponse, statusCode: number) {
+export function sendStatusCode(
+  res: NextApiResponse,
+  statusCode: number
+): NextApiResponse<any> {
   res.statusCode = statusCode
   return res
 }
@@ -202,7 +208,7 @@ export function sendStatusCode(res: NextApiResponse, statusCode: number) {
  * @param res response object
  * @param body of response
  */
-export function sendData(res: NextApiResponse, body: any) {
+export function sendData(res: NextApiResponse, body: any): void {
   if (body === null) {
     res.end()
     return
@@ -303,13 +309,15 @@ export function tryGetPreviewData(
 
   const tokenPreviewData = cookies[COOKIE_NAME_PRERENDER_DATA]
 
-  const jsonwebtoken = require('jsonwebtoken') as typeof import('jsonwebtoken')
-  let encryptedPreviewData: string
+  const jsonwebtoken = require('next/dist/compiled/jsonwebtoken') as typeof import('jsonwebtoken')
+  let encryptedPreviewData: {
+    data: string
+  }
   try {
     encryptedPreviewData = jsonwebtoken.verify(
       tokenPreviewData,
       options.previewModeSigningKey
-    ) as string
+    ) as typeof encryptedPreviewData
   } catch {
     // TODO: warn
     clearPreviewData(res as NextApiResponse)
@@ -318,7 +326,7 @@ export function tryGetPreviewData(
 
   const decryptedPreviewData = decryptWithSecret(
     Buffer.from(options.previewModeEncryptionKey),
-    encryptedPreviewData
+    encryptedPreviewData.data
   )
 
   try {
@@ -361,13 +369,15 @@ function setPreviewData<T>(
     throw new Error('invariant: invalid previewModeSigningKey')
   }
 
-  const jsonwebtoken = require('jsonwebtoken') as typeof import('jsonwebtoken')
+  const jsonwebtoken = require('next/dist/compiled/jsonwebtoken') as typeof import('jsonwebtoken')
 
   const payload = jsonwebtoken.sign(
-    encryptWithSecret(
-      Buffer.from(options.previewModeEncryptionKey),
-      JSON.stringify(data)
-    ),
+    {
+      data: encryptWithSecret(
+        Buffer.from(options.previewModeEncryptionKey),
+        JSON.stringify(data)
+      ),
+    },
     options.previewModeSigningKey,
     {
       algorithm: 'HS256',
@@ -385,7 +395,9 @@ function setPreviewData<T>(
     )
   }
 
-  const { serialize } = require('cookie') as typeof import('cookie')
+  const {
+    serialize,
+  } = require('next/dist/compiled/cookie') as typeof import('cookie')
   const previous = res.getHeader('Set-Cookie')
   res.setHeader(`Set-Cookie`, [
     ...(typeof previous === 'string'
@@ -395,7 +407,8 @@ function setPreviewData<T>(
       : []),
     serialize(COOKIE_NAME_PRERENDER_BYPASS, options.previewModeId, {
       httpOnly: true,
-      sameSite: 'strict',
+      sameSite: process.env.NODE_ENV !== 'development' ? 'none' : 'lax',
+      secure: process.env.NODE_ENV !== 'development',
       path: '/',
       ...(options.maxAge !== undefined
         ? ({ maxAge: options.maxAge } as CookieSerializeOptions)
@@ -403,7 +416,8 @@ function setPreviewData<T>(
     }),
     serialize(COOKIE_NAME_PRERENDER_DATA, payload, {
       httpOnly: true,
-      sameSite: 'strict',
+      sameSite: process.env.NODE_ENV !== 'development' ? 'none' : 'lax',
+      secure: process.env.NODE_ENV !== 'development',
       path: '/',
       ...(options.maxAge !== undefined
         ? ({ maxAge: options.maxAge } as CookieSerializeOptions)
@@ -418,7 +432,9 @@ function clearPreviewData<T>(res: NextApiResponse<T>): NextApiResponse<T> {
     return res
   }
 
-  const { serialize } = require('cookie') as typeof import('cookie')
+  const {
+    serialize,
+  } = require('next/dist/compiled/cookie') as typeof import('cookie')
   const previous = res.getHeader('Set-Cookie')
   res.setHeader(`Set-Cookie`, [
     ...(typeof previous === 'string'
@@ -432,7 +448,8 @@ function clearPreviewData<T>(res: NextApiResponse<T>): NextApiResponse<T> {
       // `Max-Age: 0` is not valid, thus ignored, and the cookie is persisted.
       expires: new Date(0),
       httpOnly: true,
-      sameSite: 'strict',
+      sameSite: process.env.NODE_ENV !== 'development' ? 'none' : 'lax',
+      secure: process.env.NODE_ENV !== 'development',
       path: '/',
     }),
     serialize(COOKIE_NAME_PRERENDER_DATA, '', {
@@ -441,7 +458,8 @@ function clearPreviewData<T>(res: NextApiResponse<T>): NextApiResponse<T> {
       // `Max-Age: 0` is not valid, thus ignored, and the cookie is persisted.
       expires: new Date(0),
       httpOnly: true,
-      sameSite: 'strict',
+      sameSite: process.env.NODE_ENV !== 'development' ? 'none' : 'lax',
+      secure: process.env.NODE_ENV !== 'development',
       path: '/',
     }),
   ])
@@ -475,7 +493,7 @@ export function sendError(
   res: NextApiResponse,
   statusCode: number,
   message: string
-) {
+): void {
   res.statusCode = statusCode
   res.statusMessage = message
   res.end(message)
@@ -496,7 +514,7 @@ export function setLazyProp<T>(
   { req, params }: LazyProps,
   prop: string,
   getter: () => T
-) {
+): void {
   const opts = { configurable: true, enumerable: true }
   const optsReset = { ...opts, writable: true }
 
@@ -511,7 +529,7 @@ export function setLazyProp<T>(
       Object.defineProperty(req, prop, { ...optsReset, value })
       return value
     },
-    set: value => {
+    set: (value) => {
       Object.defineProperty(req, prop, { ...optsReset, value })
     },
   })

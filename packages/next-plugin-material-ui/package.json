@@ -1,12 +1,17 @@
 {
   "name": "@next/plugin-material-ui",
-  "version": "9.3.1-canary.0",
+  "version": "9.4.5-canary.0",
+  "repository": {
+    "url": "vercel/next.js",
+    "directory": "packages/next-plugin-material-ui"
+  },
   "nextjs": {
     "name": "Material UI",
     "required-env": []
   },
   "peerDependencies": {
     "@material-ui/styles": "*",
-    "next": "*"
+    "next": "*",
+    "react": "*"
   }
 }

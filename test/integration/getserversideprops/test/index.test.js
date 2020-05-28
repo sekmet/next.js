@@ -1,5 +1,5 @@
 /* eslint-env jest */
-/* global jasmine */
+
 import cheerio from 'cheerio'
 import escapeRegex from 'escape-string-regexp'
 import fs from 'fs-extra'
@@ -8,6 +8,7 @@ import {
   fetchViaHTTP,
   findPort,
   getBrowserBodyText,
+  getRedboxHeader,
   killApp,
   launchApp,
   nextBuild,
@@ -19,7 +20,7 @@ import {
 import webdriver from 'next-webdriver'
 import { join } from 'path'
 
-jasmine.DEFAULT_TIMEOUT_INTERVAL = 1000 * 60 * 2
+jest.setTimeout(1000 * 60 * 2)
 const appDir = join(__dirname, '..')
 const nextConfig = join(appDir, 'next.config.js')
 let app
@@ -47,30 +48,54 @@ const expectedManifestRoutes = () => [
     page: '/blog',
   },
   {
+    namedDataRouteRegex: `^/_next/data/${escapeRegex(
+      buildId
+    )}/blog/(?<post>[^/]+?)\\.json$`,
     dataRouteRegex: normalizeRegEx(
       `^\\/_next\\/data\\/${escapeRegex(buildId)}\\/blog\\/([^\\/]+?)\\.json$`
     ),
     page: '/blog/[post]',
+    routeKeys: ['post'],
   },
   {
+    namedDataRouteRegex: `^/_next/data/${escapeRegex(
+      buildId
+    )}/blog/(?<post>[^/]+?)/(?<comment>[^/]+?)\\.json$`,
     dataRouteRegex: normalizeRegEx(
       `^\\/_next\\/data\\/${escapeRegex(
         buildId
       )}\\/blog\\/([^\\/]+?)\\/([^\\/]+?)\\.json$`
     ),
     page: '/blog/[post]/[comment]',
+    routeKeys: ['post', 'comment'],
   },
   {
+    namedDataRouteRegex: `^/_next/data/${escapeRegex(
+      buildId
+    )}/catchall/(?<path>.+?)\\.json$`,
     dataRouteRegex: normalizeRegEx(
       `^\\/_next\\/data\\/${escapeRegex(buildId)}\\/catchall\\/(.+?)\\.json$`
     ),
     page: '/catchall/[...path]',
+    routeKeys: ['path'],
+  },
+  {
+    dataRouteRegex: normalizeRegEx(
+      `^\\/_next\\/data\\/${escapeRegex(buildId)}\\/custom-cache.json$`
+    ),
+    page: '/custom-cache',
   },
   {
     dataRouteRegex: normalizeRegEx(
       `^\\/_next\\/data\\/${escapeRegex(buildId)}\\/default-revalidate.json$`
     ),
     page: '/default-revalidate',
+  },
+  {
+    dataRouteRegex: normalizeRegEx(
+      `^\\/_next\\/data\\/${escapeRegex(buildId)}\\/enoent.json$`
+    ),
+    page: '/enoent',
   },
   {
     dataRouteRegex: normalizeRegEx(
@@ -86,17 +111,27 @@ const expectedManifestRoutes = () => [
   },
   {
     dataRouteRegex: normalizeRegEx(
+      `^\\/_next\\/data\\/${escapeRegex(buildId)}\\/refresh.json$`
+    ),
+    page: '/refresh',
+  },
+  {
+    dataRouteRegex: normalizeRegEx(
       `^\\/_next\\/data\\/${escapeRegex(buildId)}\\/something.json$`
     ),
     page: '/something',
   },
   {
+    namedDataRouteRegex: `^/_next/data/${escapeRegex(
+      buildId
+    )}/user/(?<user>[^/]+?)/profile\\.json$`,
     dataRouteRegex: normalizeRegEx(
       `^\\/_next\\/data\\/${escapeRegex(
         buildId
       )}\\/user\\/([^\\/]+?)\\/profile\\.json$`
     ),
     page: '/user/[user]/profile',
+    routeKeys: ['user'],
   },
 ]
 
@@ -111,7 +146,7 @@ const navigateTest = (dev = false) => {
       '/blog/post-1/comment-1',
     ]
 
-    await Promise.all(toBuild.map(pg => renderViaHTTP(appPort, pg)))
+    await Promise.all(toBuild.map((pg) => renderViaHTTP(appPort, pg)))
 
     const browser = await webdriver(appPort, '/')
     let text = await browser.elementByCss('p').text()
@@ -199,6 +234,19 @@ const runTests = (dev = false) => {
     expect(html).toMatch(/Post:.*?post-1/)
   })
 
+  it('should handle throw ENOENT correctly', async () => {
+    const res = await fetchViaHTTP(appPort, '/enoent')
+    const html = await res.text()
+
+    if (dev) {
+      expect(html).toContain('oof')
+    } else {
+      expect(res.status).toBe(500)
+      expect(html).toContain('Internal Server Error')
+      expect(html).not.toContain('This page could not be found')
+    }
+  })
+
   it('should have gssp in __NEXT_DATA__', async () => {
     const html = await renderViaHTTP(appPort, '/')
     const $ = cheerio.load(html)
@@ -233,6 +281,46 @@ const runTests = (dev = false) => {
     )
 
     expect(data.pageProps.params).toEqual({ path: ['first'] })
+  })
+
+  it('should have original req.url for /_next/data request dynamic page', async () => {
+    const curUrl = `/_next/data/${buildId}/blog/post-1.json`
+    const data = await renderViaHTTP(appPort, curUrl)
+    const { appProps } = JSON.parse(data)
+
+    expect(appProps).toEqual({
+      url: curUrl,
+      query: { post: 'post-1' },
+      asPath: curUrl,
+      pathname: '/blog/[post]',
+    })
+  })
+
+  it('should have original req.url for /_next/data request', async () => {
+    const curUrl = `/_next/data/${buildId}/something.json`
+    const data = await renderViaHTTP(appPort, curUrl)
+    const { appProps } = JSON.parse(data)
+
+    expect(appProps).toEqual({
+      url: curUrl,
+      query: {},
+      asPath: curUrl,
+      pathname: '/something',
+    })
+  })
+
+  it('should have correct req.url and query for direct visit dynamic page', async () => {
+    const html = await renderViaHTTP(appPort, '/blog/post-1')
+    const $ = cheerio.load(html)
+    expect($('#app-url').text()).toContain('/blog/post-1')
+    expect(JSON.parse($('#app-query').text())).toEqual({ post: 'post-1' })
+  })
+
+  it('should have correct req.url and query for direct visit', async () => {
+    const html = await renderViaHTTP(appPort, '/something')
+    const $ = cheerio.load(html)
+    expect($('#app-url').text()).toContain('/something')
+    expect(JSON.parse($('#app-query').text())).toEqual({})
   })
 
   it('should return data correctly', async () => {
@@ -270,6 +358,17 @@ const runTests = (dev = false) => {
     expect(text).toMatch(/a normal page/)
   })
 
+  it('should load a fast refresh page', async () => {
+    const browser = await webdriver(appPort, '/refresh')
+    expect(
+      await check(
+        () => browser.elementByCss('p').text(),
+        /client loaded/,
+        false
+      )
+    ).toBe(true)
+  })
+
   it('should provide correct query value for dynamic page', async () => {
     const html = await renderViaHTTP(
       appPort,
@@ -305,8 +404,13 @@ const runTests = (dev = false) => {
     await waitFor(500)
     await browser.eval('window.beforeClick = "abc"')
     await browser.elementByCss('#broken-post').click()
-    await waitFor(1000)
-    expect(await browser.eval('window.beforeClick')).not.toBe('abc')
+    expect(
+      await check(() => browser.eval('window.beforeClick'), {
+        test(v) {
+          return v !== 'abc'
+        },
+      })
+    ).toBe(true)
   })
 
   it('should always call getServerSideProps without caching', async () => {
@@ -390,7 +494,7 @@ const runTests = (dev = false) => {
       await browser.elementByCss('#non-json').click()
 
       await check(
-        () => getBrowserBodyText(browser),
+        () => getRedboxHeader(browser),
         /Error serializing `.time` returned from `getServerSideProps`/
       )
     })
@@ -414,12 +518,30 @@ const runTests = (dev = false) => {
       expect(dataRoutes).toEqual(expectedManifestRoutes())
     })
 
-    it('should set no-cache, no-store, must-revalidate header', async () => {
-      const res = await fetchViaHTTP(
+    it('should set default caching header', async () => {
+      const resPage = await fetchViaHTTP(appPort, `/something`)
+      expect(resPage.headers.get('cache-control')).toBe(
+        'private, no-cache, no-store, max-age=0, must-revalidate'
+      )
+
+      const resData = await fetchViaHTTP(
         appPort,
         `/_next/data/${buildId}/something.json`
       )
-      expect(res.headers.get('cache-control')).toContain('no-cache')
+      expect(resData.headers.get('cache-control')).toBe(
+        'private, no-cache, no-store, max-age=0, must-revalidate'
+      )
+    })
+
+    it('should respect custom caching header', async () => {
+      const resPage = await fetchViaHTTP(appPort, `/custom-cache`)
+      expect(resPage.headers.get('cache-control')).toBe('public, max-age=3600')
+
+      const resData = await fetchViaHTTP(
+        appPort,
+        `/_next/data/${buildId}/custom-cache.json`
+      )
+      expect(resData.headers.get('cache-control')).toBe('public, max-age=3600')
     })
 
     it('should not show error for invalid JSON returned from getServerSideProps', async () => {

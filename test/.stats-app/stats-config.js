@@ -93,7 +93,7 @@ module.exports = {
   commentReleaseHeading: 'Stats from current release',
   appBuildCommand: 'NEXT_TELEMETRY_DISABLED=1 yarn next build',
   appStartCommand: 'NEXT_TELEMETRY_DISABLED=1 yarn next start --port $PORT',
-  mainRepo: 'zeit/next.js',
+  mainRepo: 'vercel/next.js',
   mainBranch: 'canary',
   autoMergeMain: true,
   configs: [
@@ -142,6 +142,15 @@ module.exports = {
         'http://localhost:$PORT/link',
         'http://localhost:$PORT/withRouter',
       ],
+      pagesToBench: [
+        'http://localhost:$PORT/',
+        'http://localhost:$PORT/error-in-render',
+      ],
+      benchOptions: {
+        reqTimeout: 60,
+        concurrency: 50,
+        numRequests: 2500,
+      },
     },
     {
       title: 'Serverless Mode',

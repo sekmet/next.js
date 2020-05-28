@@ -1,4 +1,6 @@
-export function getServerSideProps({ preview, previewData }) {
+export function getServerSideProps({ res, preview, previewData }) {
+  // test override in preview mode
+  res.setHeader('Cache-Control', 'public, max-age=3600')
   return {
     props: {
       hasProps: true,
@@ -8,7 +10,7 @@ export function getServerSideProps({ preview, previewData }) {
   }
 }
 
-export default function({ hasProps, preview, previewData }) {
+export default function ({ hasProps, preview, previewData }) {
   if (!hasProps) {
     return <pre id="props-pre">Has No Props</pre>
   }

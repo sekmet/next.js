@@ -1,6 +1,5 @@
-import path from 'path'
-import mkdirp from 'mkdirp'
 import fs from 'fs'
+import path from 'path'
 
 let inspector
 try {
@@ -70,6 +69,7 @@ class Profiler {
   }
 }
 
+// eslint-disable-next-line import/no-extraneous-dependencies
 const { Tracer } = require('chrome-trace-event')
 
 /**
@@ -85,14 +85,14 @@ const { Tracer } = require('chrome-trace-event')
  * @param {string} outputPath The location where to write the log.
  * @returns {Trace} The trace object
  */
-export const createTrace = outputPath => {
+export const createTrace = (outputPath) => {
   const trace = new Tracer({
     noStream: true,
   })
   const profiler = new Profiler(inspector)
   if (/\/|\\/.test(outputPath)) {
     const dirPath = path.dirname(outputPath)
-    mkdirp.sync(dirPath)
+    fs.mkdirSync(dirPath, { recursive: true })
   }
   const fsStream = fs.createWriteStream(outputPath)
 
@@ -135,7 +135,7 @@ export const createTrace = outputPath => {
     trace,
     counter,
     profiler,
-    end: callback => {
+    end: (callback) => {
       // Wait until the write stream finishes.
       fsStream.on('finish', () => {
         callback()
