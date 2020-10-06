@@ -1,10 +1,5 @@
 import styles from '../styles.module.css'
 
-// The value here will be defined in the terminal, because of server side rendering,
-// but not in the browser console
-console.log('[Server only] ENV_VARIABLE:', process.env.ENV_VARIABLE)
-console.log('[Server only] ENV_LOCAL_VARIABLE:', process.env.ENV_LOCAL_VARIABLE)
-
 const Code = (p) => <code className={styles.inlineCode} {...p} />
 
 const IndexPage = () => (
@@ -22,7 +17,7 @@ const IndexPage = () => (
       <p>
         In general only <Code>.env.local</Code> or <Code>.env</Code> are needed
         for this, but the table also features the usage of{' '}
-        <Code>.env.develoment</Code> and <Code>.env.production</Code>.
+        <Code>.env.development</Code> and <Code>.env.production</Code>.
       </p>
       <table className={styles.table}>
         <thead>
@@ -52,7 +47,7 @@ const IndexPage = () => (
 
             <td>{process.env.NEXT_PUBLIC_DEVELOPMENT_ENV_VARIABLE}</td>
             <td>
-              <Code>.env.develoment</Code>
+              <Code>.env.development</Code>
             </td>
           </tr>
           <tr>
@@ -80,14 +75,44 @@ const IndexPage = () => (
         <code>npm run dev</code>
       </pre>
       <p>
-        Similarly, variables in <Code>.env.develoment</Code> won't be available
+        Similarly, variables in <Code>.env.development</Code> won't be available
         if the app is running on production:
       </p>
       <pre>
         <code>npm run build && npm run start</code>
       </pre>
+      <p>Once you run the app, you'll see logs like these in the terminal:</p>
+      <pre>
+        <code>
+          info - Loaded env from /home/user/../.env.local{'\n'}
+          info - Loaded env from /home/user/../.env.development{'\n'}
+          info - Loaded env from /home/user/../.env{'\n'}
+        </code>
+      </pre>
+      <p>
+        The order is important, the first loaded env will have a higher
+        priority.
+      </p>
+      <p>
+        <Code>.env</Code> will not overwrite any variables defined in{' '}
+        <Code>.env.local</Code> or <Code>.env.development</Code>.
+      </p>
     </div>
   </div>
 )
+
+// `getStaticProps`, and similar Next.js methods like `getStaticPaths` and `getServerSideProps`
+// only run in Node.js. Check the terminal to see the environment variables
+export async function getStaticProps() {
+  // Using the variables below in the browser will return `undefined`. Next.js doesn't
+  // expose environment variables unless they start with `NEXT_PUBLIC_`
+  console.log('[Node.js only] ENV_VARIABLE:', process.env.ENV_VARIABLE)
+  console.log(
+    '[Node.js only] ENV_LOCAL_VARIABLE:',
+    process.env.ENV_LOCAL_VARIABLE
+  )
+
+  return { props: {} }
+}
 
 export default IndexPage
