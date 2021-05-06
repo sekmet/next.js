@@ -37,6 +37,146 @@ async function addDefaultLocaleCookie(browser) {
 }
 
 export function runTests(ctx) {
+  it('should not error with similar named cookie to locale cookie', async () => {
+    const res = await fetchViaHTTP(
+      ctx.appPort,
+      ctx.basePath || '/',
+      undefined,
+      {
+        headers: {
+          cookie: 'NEXT_LOCALE2=hello',
+        },
+      }
+    )
+
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain('index page')
+  })
+
+  it('should not add duplicate locale key when navigating back to root path with query params', async () => {
+    const basePath = ctx.basePath || ''
+    const queryKey = 'query'
+    const queryValue = '1'
+    const browser = await webdriver(
+      ctx.appPort,
+      `${basePath}/fr?${queryKey}=${queryValue}`
+    )
+
+    expect(await browser.eval(() => document.location.pathname)).toBe(
+      `${basePath}/fr`
+    )
+    expect(await browser.elementByCss('#router-pathname').text()).toBe('/')
+    expect(
+      JSON.parse(await browser.elementByCss('#router-query').text())
+    ).toEqual({ [queryKey]: queryValue })
+    expect(await browser.elementByCss('#router-locale').text()).toBe('fr')
+
+    await browser
+      .elementByCss('#to-another')
+      .click()
+      .waitForElementByCss('#another')
+
+    expect(await browser.eval(() => document.location.pathname)).toBe(
+      `${basePath}/fr/another`
+    )
+    expect(await browser.elementByCss('#router-pathname').text()).toBe(
+      '/another'
+    )
+    expect(await browser.elementByCss('#router-locale').text()).toBe('fr')
+
+    await browser.back().waitForElementByCss('#index')
+
+    expect(await browser.eval(() => document.location.pathname)).toBe(
+      `${basePath}/fr`
+    )
+    expect(await browser.elementByCss('#router-pathname').text()).toBe('/')
+    expect(
+      JSON.parse(await browser.elementByCss('#router-query').text())
+    ).toEqual({ [queryKey]: queryValue })
+    expect(await browser.elementByCss('#router-locale').text()).toBe('fr')
+  })
+
+  it('should not add duplicate locale key when navigating back to root path with hash', async () => {
+    const basePath = ctx.basePath || ''
+    const hashValue = '#anchor-1'
+    const browser = await webdriver(ctx.appPort, `${basePath}/fr${hashValue}`)
+
+    expect(await browser.eval(() => document.location.pathname)).toBe(
+      `${basePath}/fr`
+    )
+    expect(await browser.eval(() => document.location.hash)).toBe(hashValue)
+    expect(await browser.elementByCss('#router-pathname').text()).toBe('/')
+    expect(await browser.elementByCss('#router-locale').text()).toBe('fr')
+
+    await browser
+      .elementByCss('#to-another')
+      .click()
+      .waitForElementByCss('#another')
+
+    expect(await browser.eval(() => document.location.pathname)).toBe(
+      `${basePath}/fr/another`
+    )
+    expect(await browser.elementByCss('#router-pathname').text()).toBe(
+      '/another'
+    )
+    expect(await browser.elementByCss('#router-locale').text()).toBe('fr')
+
+    await browser.back().waitForElementByCss('#index')
+
+    expect(await browser.eval(() => document.location.pathname)).toBe(
+      `${basePath}/fr`
+    )
+    expect(await browser.eval(() => document.location.hash)).toBe(hashValue)
+    expect(await browser.elementByCss('#router-pathname').text()).toBe('/')
+    expect(await browser.elementByCss('#router-locale').text()).toBe('fr')
+  })
+
+  it('should handle navigating back to different casing of locale', async () => {
+    const browser = await webdriver(
+      ctx.appPort,
+      `${ctx.basePath || ''}/FR/links`
+    )
+
+    expect(await browser.eval(() => document.location.pathname)).toBe(
+      `${ctx.basePath || ''}/FR/links`
+    )
+    expect(await browser.elementByCss('#router-pathname').text()).toBe('/links')
+    expect(await browser.elementByCss('#router-locale').text()).toBe('fr')
+
+    await browser
+      .elementByCss('#to-another')
+      .click()
+      .waitForElementByCss('#another')
+
+    expect(await browser.eval(() => document.location.pathname)).toBe(
+      `${ctx.basePath || ''}/fr/another`
+    )
+    expect(await browser.elementByCss('#router-pathname').text()).toBe(
+      '/another'
+    )
+    expect(await browser.elementByCss('#router-locale').text()).toBe('fr')
+
+    await browser.back().waitForElementByCss('#links')
+
+    expect(await browser.eval(() => document.location.pathname)).toBe(
+      `${ctx.basePath || ''}/FR/links`
+    )
+    expect(await browser.elementByCss('#router-pathname').text()).toBe('/links')
+    expect(await browser.elementByCss('#router-locale').text()).toBe('fr')
+  })
+
+  it('should have correct initial query values for fallback', async () => {
+    const res = await fetchViaHTTP(
+      ctx.appPort,
+      `${ctx.basePath || '/gsp/fallback/random-' + Date.now()}`
+    )
+
+    const html = await res.text()
+    const $ = cheerio.load(html)
+
+    expect(JSON.parse($('#router-query').text())).toEqual({})
+  })
+
   it('should navigate to page with same name as development buildId', async () => {
     const browser = await webdriver(ctx.appPort, `${ctx.basePath || '/'}`)
 
@@ -67,7 +207,9 @@ export function runTests(ctx) {
     })
   })
 
-  it('should redirect to locale domain correctly client-side', async () => {
+  // this test can not currently be tested in browser without modifying the
+  // host resolution since it needs a domain to test locale domains behavior
+  it.skip('should redirect to locale domain correctly client-side', async () => {
     const browser = await webdriver(ctx.appPort, `${ctx.basePath || '/'}`)
 
     await browser.eval(`(function() {
@@ -104,7 +246,9 @@ export function runTests(ctx) {
     )
   })
 
-  it('should render the correct href for locale domain', async () => {
+  // this test can not currently be tested in browser without modifying the
+  // host resolution since it needs a domain to test locale domains behavior
+  it.skip('should render the correct href for locale domain', async () => {
     let browser = await webdriver(
       ctx.appPort,
       `${ctx.basePath || ''}/links?nextLocale=go`
@@ -139,6 +283,46 @@ export function runTests(ctx) {
       expect(href).toBe(
         `https://example.com${ctx.basePath || ''}/go-BE${pathname}`
       )
+    }
+  })
+
+  it('should render the correct href with locale domains but not on a locale domain', async () => {
+    let browser = await webdriver(
+      ctx.appPort,
+      `${ctx.basePath || ''}/links?nextLocale=go`
+    )
+
+    for (const [element, pathname] of [
+      ['#to-another', '/another'],
+      ['#to-gsp', '/gsp'],
+      ['#to-fallback-first', '/gsp/fallback/first'],
+      ['#to-fallback-hello', '/gsp/fallback/hello'],
+      ['#to-gssp', '/gssp'],
+      ['#to-gssp-slug', '/gssp/first'],
+    ]) {
+      const href = await browser.elementByCss(element).getAttribute('href')
+      const { hostname, pathname: hrefPathname } = url.parse(href)
+      expect(hostname).not.toBe('example.com')
+      expect(hrefPathname).toBe(`${ctx.basePath || ''}/go${pathname}`)
+    }
+
+    browser = await webdriver(
+      ctx.appPort,
+      `${ctx.basePath || ''}/links?nextLocale=go-BE`
+    )
+
+    for (const [element, pathname] of [
+      ['#to-another', '/another'],
+      ['#to-gsp', '/gsp'],
+      ['#to-fallback-first', '/gsp/fallback/first'],
+      ['#to-fallback-hello', '/gsp/fallback/hello'],
+      ['#to-gssp', '/gssp'],
+      ['#to-gssp-slug', '/gssp/first'],
+    ]) {
+      const href = await browser.elementByCss(element).getAttribute('href')
+      const { hostname, pathname: hrefPathname } = url.parse(href)
+      expect(hostname).not.toBe('example.com')
+      expect(hrefPathname).toBe(`${ctx.basePath || ''}/go-BE${pathname}`)
     }
   })
 
@@ -295,7 +479,7 @@ export function runTests(ctx) {
               .replace(ctx.basePath, '')
               .replace(/^\/_next\/data\/[^/]+/, '')
           ),
-          ['/en-US/gsp.json', '/fr/gsp.json', '/nl-NL/gsp.json']
+          ['/en-US/gsp.json', '/fr.json', '/fr/gsp.json', '/nl-NL/gsp.json']
         )
         return 'yes'
       }, 'yes')
